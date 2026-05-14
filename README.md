@@ -6,18 +6,19 @@
 
 ### Universal DB Query Auditor for All ORMs and Databases
 
-[![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](../LICENSE)
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/rajeshwari-p/claude-skills/releases)
+[![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/rajeshwari-pillai/review-query/releases)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-Compatible-purple.svg)](https://claude.ai/code)
-[![Commands](https://img.shields.io/badge/commands-8-orange.svg)](#commands)
+[![Commands](https://img.shields.io/badge/commands-10-orange.svg)](#commands)
 
-**Auto-detects your ORM and database. Finds N+1s, unbounded queries, SQL injection, and missing indexes — before they hit production. Every finding includes a complete solution rated with 3 confidence levels. One command to review, one command to auto-fix.**
+**Auto-detects your ORM and database. Finds N+1s, unbounded queries, SQL injection, missing indexes, and transaction issues — before they hit production. Every finding includes a complete solution rated with 3 confidence levels. One command to review, one command to auto-fix.**
 
 [Quick Start](#quick-start) |
 [Commands](#commands) |
 [Confidence Levels](#confidence-levels) |
 [Stack Support](#stack-support) |
-[What It Checks](#what-it-checks)
+[What It Checks](#what-it-checks) |
+[Examples](#examples)
 
 </div>
 
@@ -37,31 +38,28 @@
 ### Install
 
 ```bash
-cp -r query-review ~/.claude/skills/
-```
-
-Or install from repo root:
-
-```bash
-curl -sSL https://raw.githubusercontent.com/rajeshwari-p/claude-skills/main/install.sh | bash
+git clone https://github.com/rajeshwari-pillai/review-query.git
+cp -r review-query ~/.claude/skills/query-review
 ```
 
 ---
 
 ## Commands
 
-8 commands covering all common review scenarios.
+10 commands covering all common review scenarios.
 
 | Command | What it does |
 |---------|-------------|
 | [`file`](#file) | Review all queries in a file |
 | [`fix`](#fix) | Review + auto-apply HIGH-confidence fixes, prompt for MEDIUM |
-| [`function`](#function) | Deep review of a single function |
-| [`scan`](#scan) | Scan an entire app or project |
+| [`function`](#function) | Deep review of a single function or raw pasted query |
+| [`scan`](#scan) | Scan an entire app or project, export report |
 | [`check-n1`](#check-n1) | Find all N+1 patterns with batch solutions |
-| [`check-injection`](#check-injection) | Find SQL injection risks with parameterized fixes |
+| [`check-injection`](#check-injection) | Find SQL injection risks including second-order injection |
 | [`check-unbounded`](#check-unbounded) | Find missing LIMITs with pagination solutions |
 | [`check-timeout`](#check-timeout) | Find queries missing timeout configuration |
+| [`check-index`](#check-index) | Find missing indexes on filtered, joined, and sorted columns |
+| [`explain`](#explain) | Generate and interpret EXPLAIN / EXPLAIN ANALYZE plans |
 
 ---
 
@@ -84,85 +82,83 @@ Review all queries in a file AND automatically apply the fixes — no copy-paste
 
 ```bash
 /query-review-fix payments/helpers/query_helpers/payment_helper.py
-/query-review-fix direct_payments/helpers/query_helpers/stats_data_helper.py
 ```
 
 **How it works:**
 1. Finds all issues (same as `file` command)
 2. Shows a fix plan — `AUTO-FIX` / `PROMPT` / `SKIP` per finding
 3. Asks `Proceed? [Y/n]` before touching anything
-4. **HIGH confidence** → applied automatically (e.g. `.all()` result not assigned, wrong alias, unused imports)
+4. **HIGH confidence** → applied automatically
 5. **MEDIUM confidence** → prompts you one-by-one with current code + proposed fix
 6. **LOW confidence** → flagged only, never touched
 7. Prints a final summary of what was fixed, skipped, or flagged
-
-**Output**: Fix plan → confirmation prompt → edits applied inline → summary table.
 
 ---
 
 ### `function`
 
-Deep review of a single function — reads the function body, session variables, and imports.
+Deep review of a single function. Also accepts raw SQL or ORM code pasted directly — no file needed. Traces cross-function calls to detect indirect N+1s.
 
 ```bash
+# File-based
 /query-review-function fetch_custom_form_details in forms/helpers/query_helpers/custom_form_export_helper.py
-/query-review-function export_custom_form in forms/helpers/function_helpers/custom_form_export_helper.py
-```
 
-**Output**: Function-scoped findings with exact line numbers, confidence-rated solutions, and verify commands.
+# Raw paste — no file needed
+/query-review-function
+SELECT u.*, p.* FROM users u
+JOIN payments p ON p.user_id = u.id
+WHERE u.institute_id = 123
+```
 
 ---
 
 ### `scan`
 
-Scan an entire app directory or the full project. Ranks findings by severity + confidence and gives a prioritised fix list.
+Scan an entire app directory or the full project. Supports output and threshold flags.
 
 ```bash
 /query-review-scan forms/
-/query-review-scan payments/
-/query-review-scan                    # scan entire project
+/query-review-scan payments/ --severity-threshold HIGH
+/query-review-scan --output audit.md
+/query-review-scan
 ```
 
-**Output**: Cross-file findings table → per-finding blocks → recommended fix order (CRITICAL+HIGH first).
+**Output**: Cross-file findings ranked by file impact (most issues first) → per-finding blocks → recommended fix order.
 
 ---
 
 ### `check-n1`
 
-Focused N+1 detection. Traces function calls inside loops to confirm indirect N+1s. Provides batch-query solutions.
+Focused N+1 detection. Covers Django `select_related`/`prefetch_related`, Mongoose `.populate()`, and Celery async N+1 patterns.
 
 ```bash
 /query-review-check-n1 forms/helpers/function_helpers/custom_form_export_helper.py
 /query-review-check-n1 payments/
 ```
 
-**Output**: For each N+1 — impact calculation (e.g. "500 students = 501 queries"), current loop code, batch helper to add, and updated caller loop.
+**Output**: For each N+1 — impact calculation (e.g. "500 students = 501 queries"), current loop code, batch helper, and updated caller.
 
 ---
 
 ### `check-injection`
 
-SQL injection scan. Detects f-strings, string concat, `.format()`, and template literals inside `execute()`, `text()`, `db.Raw()`. Traces value sources to assess exploitability.
+SQL injection scan. Detects f-strings, string concat, `.format()`, and template literals. Also detects **second-order injection** — where a value stored safely in the DB is later re-used unsafely in a query.
 
 ```bash
 /query-review-check-injection forms/
 /query-review-check-injection gqinstitute_backend/utils/
 ```
 
-**Output**: For each unsafe query — attack scenario example, parameterized replacement, and confidence level based on whether value is user-controlled.
-
 ---
 
 ### `check-unbounded`
 
-Finds `.all()`, `findMany()`, `find({})` with no `.limit()`. Offers 3 fix options per finding: paginated, hard-capped, or batch-streamed.
+Finds `.all()`, `findMany()`, `find({})` with no `.limit()`. Offers pagination, hard-cap, or batch-streaming fixes.
 
 ```bash
 /query-review-check-unbounded forms/helpers/query_helpers/
 /query-review-check-unbounded reports/
 ```
-
-**Output**: For each unbounded query — risk assessment, Solution A (pagination), Solution B (hard cap), Solution C (batch streaming), with a recommendation.
 
 ---
 
@@ -175,87 +171,96 @@ Finds complex queries missing timeout configuration. Checks global config first 
 /query-review-check-timeout gqinstitute_backend/utils/db_config.py
 ```
 
-**Output**: For each missing timeout — query complexity analysis, Solution A (query-level), Solution B (statement-level), Solution C (global config).
+---
+
+### `check-index`
+
+Detects missing indexes on filtered, joined, sorted, and grouped columns. Generates `CREATE INDEX` statements and Alembic migration snippets. Handles composite index ordering and MySQL vs PostgreSQL syntax.
+
+```bash
+/query-review-check-index payments/helpers/query_helpers/payment_helper.py
+/query-review-check-index applications/
+```
+
+**Output**: For each missing index — the query pattern, `CREATE INDEX` statement, and Alembic `upgrade`/`downgrade` snippet.
+
+---
+
+### `explain`
+
+Generates the exact `EXPLAIN` / `EXPLAIN ANALYZE` SQL to run, then interprets the plan — identifies seq scans, missing indexes, filesort, and bad joins.
+
+```bash
+# From a function
+/query-review-explain get_applications in payments/helpers/query_helpers/payment_helper.py
+
+# From raw SQL
+/query-review-explain
+SELECT * FROM applications WHERE institute_id = 123 ORDER BY created_at DESC
+```
+
+**Output**: Copy-paste EXPLAIN command → plan interpretation → root cause + fix for each problem node.
 
 ---
 
 ## Confidence Levels
 
-Every finding is rated HIGH, MEDIUM, or LOW before a solution is written.
-
 | Level | Meaning | What to do |
 |-------|---------|-----------|
 | **HIGH** | Issue confirmed by reading the code. Unambiguous. | Apply solution directly |
-| **MEDIUM** | Pattern matches but context (caller, config, table size) may change the assessment | Review solution before applying |
-| **LOW** | Suspicious pattern but depends on runtime data or call sites | Investigate first, then apply if confirmed |
-
-### How confidence is assigned
-
-**HIGH** when:
-- Query is visibly inside a loop (N+1)
-- f-string or concat confirmed in `execute()` / `text()` / `db.Raw()` (injection)
-- `.all()` with no `.limit()` and function has no limit parameter (unbounded)
-- No global timeout found in db_config AND query has 4+ table JOINs (timeout)
-
-**MEDIUM** when:
-- Pattern matches but a decorator or framework behaviour might handle it
-- Table may be intentionally small (master/lookup tables)
-- Global timeout may exist but was not confirmed in this scan
-
-**LOW** when:
-- Value source not fully traced (injection)
-- Caller always passes a limit even though function doesn't enforce one (unbounded)
-- Query is on a known small table (timeout)
+| **MEDIUM** | Pattern matches but context may change the assessment | Review before applying |
+| **LOW** | Suspicious pattern — depends on runtime data or call sites | Investigate first |
 
 ---
 
 ## Stack Support
 
-### ORMs (auto-detected from imports)
-
-| ORM | Language | Detection |
-|-----|----------|-----------|
-| SQLAlchemy | Python | `from sqlalchemy` |
-| Django ORM | Python | `from django.db` |
-| Prisma | TypeScript/JS | `@prisma/client` |
-| TypeORM | TypeScript/JS | `@Entity`, `getRepository` |
-| Sequelize | TypeScript/JS | `DataTypes` |
-| GORM | Go | `gorm.io` |
-| Mongoose | Node.js | `mongoose`, `Schema` |
-| ActiveRecord | Ruby | `has_many`, `belongs_to` |
-| Hibernate | Java | `@Entity`, `EntityManager` |
+| ORM | Language |
+|-----|----------|
+| SQLAlchemy | Python |
+| Django ORM | Python |
+| Prisma | TypeScript/JS |
+| TypeORM | TypeScript/JS |
+| Sequelize | TypeScript/JS |
+| GORM | Go |
+| Mongoose | Node.js |
+| ActiveRecord | Ruby |
+| Hibernate | Java |
 
 **Raw SQL:** MySQL · PostgreSQL · SQLite · MSSQL · Oracle
 
-**NoSQL:** MongoDB aggregation pipelines · Redis commands · Elasticsearch DSL
+**NoSQL:** MongoDB · Redis · Elasticsearch
 
 ---
 
 ## What It Checks
 
-### Universal (all stacks)
-
 | Check | Command |
 |-------|---------|
-| N+1 query pattern | `check-n1`, `review-file`, `scan` |
-| Unbounded query — no LIMIT | `check-unbounded`, `review-file`, `scan` |
-| SELECT * / all columns | `review-file`, `scan` |
-| SQL injection | `check-injection`, `review-file`, `scan` |
-| No query timeout | `check-timeout`, `review-file` |
-| Count + fetch anti-pattern | `review-file`, `scan` |
-| Fetch full object for one field | `review-file`, `scan` |
-| Query inside serializer/property | `review-file`, `scan` |
+| N+1 query pattern | `check-n1`, `file`, `scan` |
+| Unbounded query — no LIMIT | `check-unbounded`, `file`, `scan` |
+| SELECT * / all columns | `file`, `scan` |
+| SQL injection (direct + second-order) | `check-injection`, `file`, `scan` |
+| No query timeout | `check-timeout`, `file` |
+| Missing indexes | `check-index` |
+| Execution plan analysis | `explain` |
+| Count + fetch anti-pattern | `file`, `scan` |
+| INSERT then SELECT (use RETURNING) | `file`, `scan` |
+| Query inside serializer/property | `file`, `scan` |
 
-### ORM-Specific
+---
 
-| ORM | Additional checks |
-|-----|-------------------|
-| SQLAlchemy | Lazy load in loop, session across threads, duplicate imports, bare column in `and_()`, incomplete `GROUP BY` |
-| Django ORM | Missing `select_related`/`prefetch_related`, `.all()` without filter |
-| Prisma/TypeORM | `findMany()` without `take`, `await` inside loop |
-| GORM | `.Find()` without `.Limit()`, missing `db.Error` check |
-| Mongoose | `.find({})` without `.limit()`, `$where` JS eval, missing `.lean()` |
-| Redis | `KEYS *` in prod, `SMEMBERS` on large set, `SETNX` without `EXPIRE` |
+## Examples
+
+The `examples/` directory contains annotated before/after code and sample tool output:
+
+| File | What it shows |
+|------|--------------|
+| `examples/n1_bad.py` | N+1 pattern — 501 queries for 500 rows |
+| `examples/n1_fixed.py` | Fixed with batch query — always 2 queries |
+| `examples/injection_bad.py` | Direct + second-order SQL injection |
+| `examples/unbounded_bad.py` | Unbounded queries + missing index patterns |
+| `examples/sample_output.md` | Full example of tool output for `check-n1` |
 
 ---
 
@@ -263,23 +268,31 @@ Every finding is rated HIGH, MEDIUM, or LOW before a solution is written.
 
 ```
 query-review/
-  SKILL.md          # Core skill — detection rules + solution format
-  README.md         # This file
-  install.sh        # Install to ~/.claude/skills/query-review/ + commands
-  uninstall.sh      # Remove from ~/.claude/skills/
+  SKILL.md              # Core skill — detection rules + solution format
+  README.md             # This file
+  install.sh            # Install to ~/.claude/skills/query-review/
+  uninstall.sh          # Remove from ~/.claude/skills/
   commands/
-    file.md              # /query-review-file   — review all queries in a file
-    fix.md               # /query-review-fix    — review + auto-apply fixes
-    function.md          # /query-review-function — deep review of one function
-    scan.md              # /query-review-scan   — scan entire app or project
-    check-n1.md          # /query-review-check-n1
-    check-injection.md   # /query-review-check-injection
-    check-unbounded.md   # /query-review-check-unbounded
-    check-timeout.md     # /query-review-check-timeout
+    file.md             # /query-review-file
+    fix.md              # /query-review-fix
+    function.md         # /query-review-function
+    scan.md             # /query-review-scan
+    check-n1.md         # /query-review-check-n1
+    check-injection.md  # /query-review-check-injection
+    check-unbounded.md  # /query-review-check-unbounded
+    check-timeout.md    # /query-review-check-timeout
+    check-index.md      # /query-review-check-index
+    explain.md          # /query-review-explain
+  examples/
+    n1_bad.py
+    n1_fixed.py
+    injection_bad.py
+    unbounded_bad.py
+    sample_output.md
 ```
 
 ---
 
 ## License
 
-MIT License — see [LICENSE](../LICENSE) for details.
+MIT License — see [LICENSE](LICENSE) for details.
