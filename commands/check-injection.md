@@ -66,6 +66,40 @@ em.createQuery("SELECT u FROM User u WHERE u.id = :id").setParameter("id", id)
 PreparedStatement ps = conn.prepareStatement("SELECT * FROM users WHERE id = ?");
 ```
 
+## Step 1b — Second-order injection detection
+
+Second-order injection occurs when user-supplied data is safely stored in the DB, but later retrieved and used unsafely in a query. It's harder to detect because the input and the injection happen in different code paths.
+
+Look for this two-step pattern:
+
+**Step A — Data stored (safe, parameterized):**
+```python
+# Input is stored safely
+session.execute(
+    text("INSERT INTO users (name) VALUES (:name)"),
+    {"name": user_input}   # ← parameterized, looks safe
+)
+```
+
+**Step B — Data retrieved and re-used unsafely in a query:**
+```python
+# Later, the stored value is fetched and interpolated
+user = session.execute(text("SELECT name FROM users WHERE id = :id"), {"id": uid}).fetchone()
+query = f"SELECT * FROM orders WHERE customer = '{user['name']}'"  # ← INJECTION
+session.execute(text(query))
+```
+
+**Detection pattern**: look for variables that come from a DB fetch (`.fetchone()`, `.fetchall()`, `.first()`, `.all()`) being interpolated into a subsequent query string. These are HIGH risk even if the original insert was safe.
+
+```python
+# Patterns to flag
+row = session.execute(...).fetchone()
+query = f"... WHERE col = '{row['field']}'"   # ← second-order injection
+query = "... WHERE col = '" + row.field + "'" # ← second-order injection
+```
+
+Risk level for second-order: **HIGH** (the data came from user input at some earlier point, even if it's now in the DB).
+
 ## Step 2 — Assess each finding
 
 For each unsafe pattern found:

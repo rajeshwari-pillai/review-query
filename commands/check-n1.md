@@ -38,6 +38,55 @@ for _, x := range results {
 }
 ```
 
+**Django ORM — missing select_related / prefetch_related:**
+```python
+# N+1 — each .institute accesses a FK that triggers a query
+applications = Application.objects.filter(status="active")
+for app in applications:
+    print(app.institute.name)   # ← hits DB once per application
+
+# Fix — select_related for ForeignKey (single object)
+applications = Application.objects.filter(status="active").select_related("institute")
+
+# Fix — prefetch_related for ManyToMany or reverse FK
+applications = Application.objects.filter(status="active").prefetch_related("payments")
+```
+
+**Mongoose — missing .populate():**
+```javascript
+// N+1 — each document lookup triggers a separate query
+const applications = await Application.find({ status: "active" });
+for (const app of applications) {
+    const institute = await Institute.findById(app.instituteId); // ← N queries
+}
+
+// Fix — populate at query time
+const applications = await Application.find({ status: "active" })
+    .populate("instituteId", "name code");  // single JOIN-equivalent query
+```
+
+**Celery / async N+1 — query inside a task called per-item:**
+```python
+# N+1 — caller dispatches one task per item, each task queries independently
+for application_id in application_ids:
+    process_application.delay(application_id)   # ← each task runs 1 query
+
+@shared_task
+def process_application(application_id):
+    app = session.query(Application).filter_by(id=application_id).first()  # ← N queries total
+
+# Fix — batch task that fetches all at once
+process_applications_batch.delay(application_ids)
+
+@shared_task
+def process_applications_batch(application_ids):
+    apps = session.query(Application).filter(Application.id.in_(application_ids)).all()
+    for app in apps:
+        ...  # process from in-memory list
+```
+
+Flag Celery N+1 as **MEDIUM** confidence (execution is async — confirm task is actually called per-item in a loop at the dispatch site).
+
 **Indirect N+1** — function called in loop that internally queries:
 - Read the called function to confirm it runs a query
 - If confirmed: N+1 at calling site, not inside the function

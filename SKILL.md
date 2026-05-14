@@ -34,6 +34,27 @@ Before reviewing, scan the target file(s) for imports and usage to identify:
 
 ---
 
+## Step 1b — Dialect Detection
+
+After detecting the ORM, identify the database dialect for dialect-specific rules:
+
+**MySQL indicators**: `pymysql`, `mysqlclient`, `mysql+pymysql`, `SHOW TABLES`, `LIMIT ? OFFSET ?`, `AUTO_INCREMENT`, backtick identifiers
+**PostgreSQL indicators**: `psycopg2`, `asyncpg`, `postgresql+psycopg2`, `$1` placeholders, `RETURNING`, `JSONB`, `CONCURRENTLY`, `ON CONFLICT`
+**SQLite indicators**: `sqlite3`, `pysqlite`, `///path/to/db.sqlite`
+
+**MySQL-specific checks:**
+- `LIMIT` without `ORDER BY` — results are non-deterministic in MySQL (no guaranteed sort without explicit ORDER BY)
+- `EXPLAIN FORMAT=JSON` available in MySQL 5.6+ — use for detailed plan
+- `SELECT ... FOR UPDATE` requires `innodb_lock_wait_timeout` to be set, or it blocks indefinitely
+- `GROUP BY` in MySQL 5.7 (ONLY_FULL_GROUP_BY mode off by default) may hide bugs that fail in strict mode
+
+**PostgreSQL-specific checks:**
+- `JSONB` queries without a GIN index (`@>`, `?`, `?|`) — full table scan on JSONB column
+- `INSERT ... RETURNING` preferred over INSERT then SELECT — avoids a second round trip
+- `SELECT FOR UPDATE` without `NOWAIT` or `SKIP LOCKED` — blocks silently in production
+- `CREATE INDEX` without `CONCURRENTLY` — locks table during index build in Postgres
+- Stale statistics: if `rows` estimate in EXPLAIN is far off actual, run `ANALYZE table_name`
+
 ## Step 2 — Universal Checks (apply to ALL stacks)
 
 These checks apply regardless of database or ORM:
@@ -77,6 +98,17 @@ orders = db.query(Order).filter(Order.user_id.in_(user_ids)).all()
 **Trigger**: `COUNT(*)` query immediately followed by a `SELECT` for the same rows.
 **Risk**: Two round trips to DB when one suffices.
 **Fix**: Use `SELECT SQL_CALC_FOUND_ROWS` (MySQL), `RETURNING`, or paginate with a single query.
+
+### U9 — INSERT Then SELECT (Missing RETURNING)
+**Trigger**: `INSERT` immediately followed by `SELECT` to retrieve the inserted row or its generated ID.
+**Risk**: Two DB round trips; race condition if another process modifies the row between insert and select.
+**Fix** (PostgreSQL): Use `RETURNING id` or `RETURNING *` in the INSERT.
+**Fix** (MySQL): Use `cursor.lastrowid` or `session.execute(...).inserted_primary_key` — no second SELECT.
+
+### U10 — Queries Inside Serializers / Properties
+**Trigger**: DB call inside `to_dict()`, `__str__`, `@property`, a DRF serializer field, or a SQLAlchemy `@hybrid_property`.
+**Risk**: Every access triggers a hidden query — creates invisible N+1 that doesn't appear in loop analysis.
+**Fix**: Preload the data before serialization. Pass it as a parameter or use eager loading.
 
 ### U7 — No Query Timeout
 **Trigger**: Long-running or potentially slow query with no timeout set at query or connection level.
@@ -175,17 +207,31 @@ Always output a summary table first, then a full finding block for every issue. 
 ```
 ## Query Review Results
 
-| # | Severity | Issue | Location | Solution |
-|---|----------|-------|----------|----------|
-| 1 | CRITICAL  | SQL injection via f-string | auth.py:42 | Parameterized query |
-| 2 | HIGH      | N+1: orders fetched in loop | orders.py:18 | Batch with .in_() |
-| 3 | HIGH      | Unbounded SELECT * | users.py:31 | .limit() + named columns |
-| 4 | MEDIUM    | No query timeout | db.py:55 | execution_options(timeout=) |
-| 5 | LOW       | Count + fetch anti-pattern | reports.py:12 | Single paginated query |
+| # | Severity | Complexity | Issue | Location | Solution |
+|---|----------|-----------|-------|----------|----------|
+| 1 | CRITICAL  | 6/10 | SQL injection via f-string | auth.py:42 | Parameterized query |
+| 2 | HIGH      | 8/10 | N+1: orders fetched in loop | orders.py:18 | Batch with .in_() |
+| 3 | HIGH      | 4/10 | Unbounded SELECT * | users.py:31 | .limit() + named columns |
+| 4 | MEDIUM    | 7/10 | No query timeout | db.py:55 | execution_options(timeout=) |
+| 5 | LOW       | 3/10 | Count + fetch anti-pattern | reports.py:12 | Single paginated query |
 
 Stack detected: SQLAlchemy + MySQL
 Total: 5 findings (1 critical, 2 high, 1 medium, 1 low)
 ```
+
+**Complexity score (1–10)** — computed per query, shown in the summary table:
+- +1 per JOIN
+- +1 per subquery
+- +2 for GROUP BY or aggregation (COUNT, SUM, AVG)
+- +1 for ORDER BY on unindexed column
+- +2 if no LIMIT on a potentially large table
+- +1 per filter condition beyond the first
+- +1 if no timeout is set
+- -1 if result is cached (Redis, memcached)
+
+Score 1–3: low complexity (simple indexed lookup)
+Score 4–6: moderate (review recommended)
+Score 7–10: high complexity (flag, explain plan suggested)
 
 ### Per-finding block (required for every finding)
 

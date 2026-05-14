@@ -1,10 +1,24 @@
 ---
-description: Review a specific function or method for database query issues. Provide solutions with confidence levels. Input format: "function_name in path/to/file.py"
+description: Review a specific function or method for database query issues. Provide solutions with confidence levels. Input format: "function_name in path/to/file.py" — or paste raw SQL/ORM code directly.
 ---
 
 Review the database queries in this function: $ARGUMENTS
 
 Follow these steps precisely:
+
+## Step 0 — Detect input type
+
+Two input modes are supported:
+
+**Mode A — File reference** (standard):
+Input contains `in path/to/file.py` → extract function name + file path, proceed to Step 1.
+
+**Mode B — Raw paste** (no file):
+Input is raw SQL or ORM code pasted inline (no file path, no `in` keyword). Skip Step 1.
+- Infer the dialect/ORM from syntax (`session.query` = SQLAlchemy, `SELECT` = raw SQL, `await prisma` = Prisma, etc.)
+- Treat the pasted code as the function body
+- Skip file-reading steps; all analysis runs on the pasted code directly
+- Note at the top of output: "⚠ Analysed from pasted code — no file to write back to. Fixes are suggestions only."
 
 ## Step 1 — Locate and read
 Parse the input to extract the function name and file path.
@@ -20,7 +34,26 @@ From the file's imports identify the ORM and session variable:
 
 All solutions MUST use the exact variable names found in the file.
 
-## Step 3 — Deep review of the function
+## Step 3 — Cross-function tracing
+
+Before the deep review, identify any helper functions called inside the target function:
+
+```python
+# Example: target function calls a helper
+def get_dashboard_data(institute_id):
+    applications = get_applications(institute_id)   # ← calls helper
+    for app in applications:
+        fees = get_fees_for_application(app.id)     # ← N+1 if this queries DB
+```
+
+For each called function:
+1. Check if it's defined in the same file — if yes, read it
+2. If it's imported from another file, read that file and find the function
+3. If the called function runs a DB query, flag it as a potential indirect N+1 at the call site (not inside the helper)
+
+Note the finding location as the **calling line** in the target function, not the helper — that's where the fix goes.
+
+## Step 4 — Deep review of the function
 
 Read every line of the function. For each query check:
 
@@ -43,7 +76,7 @@ Read every line of the function. For each query check:
 - Mongoose: `.find({})` without `.limit()`, missing `.lean()`
 - GORM: `.Find()` without `.Limit()`, missing `db.Error` check
 
-## Step 4 — Output
+## Step 5 — Output
 
 ### Function summary
 ```

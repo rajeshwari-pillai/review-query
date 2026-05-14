@@ -6,6 +6,13 @@ Scan for database query issues in: $ARGUMENTS
 
 If no argument given, scan the entire project.
 
+## Flags (optional, parsed from $ARGUMENTS)
+
+- `--output <file>` — write the full report to a file (e.g. `--output report.md`). Still print summary to terminal.
+- `--severity-threshold <level>` — only show findings at or above this level: `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` (default: `LOW` = show all).
+
+Example: `app/query_helpers --severity-threshold HIGH --output audit.md`
+
 Follow these steps:
 
 ## Step 1 — Find all query files
@@ -99,10 +106,16 @@ Total issues: {N}
 
 ### Fix priority order
 
-After all findings, output a prioritised fix list:
+After all findings, output a prioritised fix list — ordered by **file impact** (most issues in a single file first), then by severity within each file:
 
 ```
 ## Recommended Fix Order
+
+### Highest-impact files (most issues)
+| File | Issues | Severities | Fix these first |
+|------|--------|-----------|-----------------|
+| app/query_helpers/payment_helper.py | 5 | 2 CRITICAL, 3 HIGH | Yes |
+| app/query_helpers/application_helper.py | 3 | 1 HIGH, 2 MEDIUM | Yes |
 
 Fix these first (CRITICAL + HIGH confidence):
 1. Finding #N — {title} ({file}:{line})
@@ -116,6 +129,11 @@ Investigate these (LOW confidence — verify before fixing):
 5. Finding #N — {title} ({file}:{line})
 6. ...
 ```
+
+### Output file (if --output flag given)
+
+Write the complete report (all sections above) to the specified file using the Write tool.
+Print to terminal: `Report written to {filename} — {N} findings`
 
 ## Confidence levels
 
